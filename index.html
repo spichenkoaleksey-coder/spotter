@@ -25,12 +25,17 @@
     <div class="card">
         <h2>🛩 Самолёты рядом</h2>
         <div id="aircraft-container">Загрузка...</div>
-        <p class="note" id="zone-info">Зона видимости: 15 км, высота < 6000 м<br>Обновление каждые 5 мин (анонимный OpenSky)</p>
+        <p class="note" id="zone-info">Зона видимости: 15 км, высота < 6000 м<br>Обновление каждые 5 мин</p>
     </div>
 
     <button onclick="requestNotificationPermission()">🔔 Включить уведомления</button>
 
     <script>
+        // Правильный синтаксис для cors.eu.org (без ? в начале)
+        const PROXY_LIST = [
+            'https://cors.eu.org/',
+            'https://api.allorigins.win/raw?url='
+        ];
         const VISIBLE_RADIUS_KM = 15;
         const MAX_ALTITUDE_M = 6000;
 
@@ -75,54 +80,68 @@
             const latMax = userLat + 1;
             const lngMin = userLng - 1;
             const lngMax = userLng + 1;
+            const openskyUrl = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
 
-            // Прямой анонимный запрос (работает без прокси, потому что CORS разрешён)
-            const url = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
-
-            try {
-                const res = await fetch(url);
-                const data = await res.json();
-                if (!data.states || data.states.length === 0) {
-                    container.innerHTML = 'Самолётов поблизости нет.';
-                    return;
-                }
-
-                const nearby = [];
-                for (const state of data.states) {
-                    const [icao24, callsign, , , , lon, lat, baro_altitude] = state;
-                    if (lat === null || lon === null || baro_altitude === null) continue;
-                    const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
-                    if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
-                        nearby.push({
-                            icao: icao24,
-                            callsign: callsign ? callsign.trim() : 'N/A',
-                            altitude: baro_altitude.toFixed(0),
-                            distance: distKm.toFixed(1)
-                        });
+            let data = null;
+            for (const proxy of PROXY_LIST) {
+                try {
+                    let url;
+                    if (proxy === 'https://cors.eu.org/') {
+                        // Правильно: склеиваем без encodeURIComponent, так как URL уже валидный
+                        url = proxy + openskyUrl;
+                    } else {
+                        url = proxy + encodeURIComponent(openskyUrl);
                     }
+                    const res = await fetch(url);
+                    data = await res.json();
+                    if (data && data.states) break;
+                } catch (e) {
+                    console.warn('Прокси не сработал:', proxy);
                 }
-
-                nearby.sort((a, b) => a.distance - b.distance);
-
-                if (nearby.length === 0) {
-                    container.innerHTML = 'Все самолёты далеко или высоко.';
-                } else {
-                    container.innerHTML = nearby.map(a => `
-                        <div class="aircraft">
-                            <div>
-                                <span class="callsign">${a.callsign}</span><br>
-                                <small>${a.altitude} м</small>
-                            </div>
-                            <div class="distance">${a.distance} км</div>
-                        </div>
-                    `).join('');
-                }
-
-                checkAndNotify(nearby);
-            } catch (e) {
-                container.innerHTML = 'Ошибка загрузки данных OpenSky.';
-                console.error(e);
             }
+
+            if (!data || !data.states) {
+                container.innerHTML = '❌ Не удалось загрузить данные. Попробуй позже.';
+                return;
+            }
+
+            if (data.states.length === 0) {
+                container.innerHTML = 'Самолётов поблизости нет.';
+                return;
+            }
+
+            const nearby = [];
+            for (const state of data.states) {
+                const [icao24, callsign, , , , lon, lat, baro_altitude] = state;
+                if (lat === null || lon === null || baro_altitude === null) continue;
+                const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
+                if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
+                    nearby.push({
+                        icao: icao24,
+                        callsign: callsign ? callsign.trim() : 'N/A',
+                        altitude: baro_altitude.toFixed(0),
+                        distance: distKm.toFixed(1)
+                    });
+                }
+            }
+
+            nearby.sort((a, b) => a.distance - b.distance);
+
+            if (nearby.length === 0) {
+                container.innerHTML = 'Все самолёты далеко или высоко.';
+            } else {
+                container.innerHTML = nearby.map(a => `
+                    <div class="aircraft">
+                        <div>
+                            <span class="callsign">${a.callsign}</span><br>
+                            <small>${a.altitude} м</small>
+                        </div>
+                        <div class="distance">${a.distance} км</div>
+                    </div>
+                `).join('');
+            }
+
+            checkAndNotify(nearby);
         }
 
         function checkAndNotify(aircraftList) {
@@ -144,7 +163,7 @@
 
         function requestNotificationPermission() {
             Notification.requestPermission().then(perm => {
-                if (perm === 'granted') alert('Уведомления включены! Буду сообщать о бортах.');
+                if (perm === 'granted') alert('Уведомления включены!');
                 else alert('Нужно разрешить уведомления в настройках браузера.');
             });
         }
@@ -160,8 +179,7 @@
         function deg2rad(deg) { return deg * (Math.PI/180); }
 
         getUserLocation();
-        // Обновляем каждые 5 минут (288 запросов/день — в рамках анонимного лимита)
-        setInterval(fetchAircraft, 300000);
+        setInterval(fetchAircraft, 300000); // каждые 5 минут
     </script>
 </body>
 </html>
