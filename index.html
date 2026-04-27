@@ -36,6 +36,16 @@
         const VISIBLE_RADIUS_KM = 15;
         const MAX_ALTITUDE_M = 6000;
 
+        // Список рабочих CORS-прокси (попробуем по очереди)
+        const PROXIES = [
+            'https://api.allorigins.win/raw?url=',
+            'https://cors.bridged.cc/',
+            'https://cors.eu.org/',
+            'https://cors-anywhere.herokuapp.com/',
+            'https://api.codetabs.com/v1/proxy?quest=',
+            'https://corsproxy.io/?'
+        ];
+
         let userLat = null;
         let userLng = null;
         let notifiedAircraft = new Set();
@@ -68,6 +78,19 @@
             );
         }
 
+        async function tryFetchWithProxies(openskyUrl, headers) {
+            for (const proxy of PROXIES) {
+                try {
+                    const url = proxy + encodeURIComponent(openskyUrl);
+                    const res = await fetch(url, { headers });
+                    if (res.ok) return await res.json();
+                } catch (e) {
+                    console.warn(`Прокси ${proxy} не сработал, пробуем следующий...`);
+                }
+            }
+            throw new Error('Все прокси недоступны');
+        }
+
         async function fetchAircraft() {
             if (userLat === null) return;
             const container = document.getElementById('aircraft-container');
@@ -79,8 +102,6 @@
             const lngMax = userLng + 1;
 
             const openskyUrl = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
-            // ✅ Используем CORS-прокси, чтобы обойти блокировку браузера
-            const url = `https://corsproxy.io/?` + encodeURIComponent(openskyUrl);
 
             const headers = {};
             if (OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET) {
@@ -90,8 +111,7 @@
             }
 
             try {
-                const res = await fetch(url, { headers });
-                const data = await res.json();
+                const data = await tryFetchWithProxies(openskyUrl, headers);
                 if (!data.states || data.states.length === 0) {
                     container.innerHTML = 'Самолётов поблизости нет.';
                     return;
