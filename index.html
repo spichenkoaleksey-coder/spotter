@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Live Spotter</title>
+    <link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22Live%20Spotter%22%2C%22short_name%22%3A%22Spotter%22%2C%22start_url%22%3A%22.%2F%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%231e1e2f%22%2C%22theme_color%22%3A%22%234ecdc4%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20100%20100'%3E%3Ctext%20y%3D'80'%20font-size%3D'80'%3E%F0%9F%9B%A9%3C%2Ftext%3E%3C%2Fsvg%3E%22%2C%22sizes%22%3A%22100x100%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%7D%5D%7D">
+    <style>
+        body { font-family: system-ui, sans-serif; background: #1e1e2f; color: #eee; padding: 20px; margin: 0; }
+        .card { background: #2a2a40; border-radius: 20px; padding: 20px; margin-bottom: 20px; box-shadow: 0 8px 20px rgba(0,0,0,0.5); }
+        button { background: #ff6b6b; color: white; border: none; padding: 15px; border-radius: 15px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 10px; }
+        .aircraft { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #3a3a5a; }
+        .aircraft:last-child { border-bottom: none; }
+        .callsign { font-weight: bold; color: #4ecdc4; }
+        .distance { font-size: 14px; color: #ffe66d; }
+        .note { font-size: 13px; color: #aaa; text-align: center; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>📍 Твоя позиция</h2>
+        <div id="user-coords">Ожидание GPS...</div>
+    </div>
+
+    <div class="card">
+        <h2>🛩 Самолёты рядом</h2>
+        <div id="aircraft-container">Загрузка...</div>
+        <p class="note" id="zone-info">Зона видимости: 15 км, высота < 6000 м</p>
+    </div>
+
+    <button onclick="requestNotificationPermission()">🔔 Включить уведомления</button>
+
+    <script>
+        // Твои ключи от OpenSky
+        const OPENSKY_CLIENT_ID = 'leksus27-api-client';
+        const OPENSKY_CLIENT_SECRET = 'LJWxOAmwDSCuP2QKVFOHg7UyfLjUsWl0';
+        const VISIBLE_RADIUS_KM = 15;
+        const MAX_ALTITUDE_M = 6000;
+
+        let userLat = null;
+        let userLng = null;
+        let notifiedAircraft = new Set();
+
+        // Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js')
+                    .then(reg => console.log('SW зарегистрирован'))
+                    .catch(err => console.log('SW ошибка:', err));
+            });
+        }
+
+        function getUserLocation() {
+            if (!navigator.geolocation) {
+                document.getElementById('user-coords').textContent = 'GPS не поддерживается';
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                pos => {
+                    userLat = pos.coords.latitude;
+                    userLng = pos.coords.longitude;
+                    document.getElementById('user-coords').innerHTML =
+                        `📍 ${userLat.toFixed(4)}°, ${userLng.toFixed(4)}°`;
+                    fetchAircraft();
+                },
+                err => {
+                    document.getElementById('user-coords').textContent = 'Ошибка GPS: ' + err.message;
+                },
+                { enableHighAccuracy: true, maximumAge: 60000 }
+            );
+        }
+
+        async function fetchAircraft() {
+            if (userLat === null) return;
+            const container = document.getElementById('aircraft-container');
+            container.innerHTML = 'Поиск самолётов...';
+
+            const latMin = userLat - 1;
+            const latMax = userLat + 1;
+            const lngMin = userLng - 1;
+            const lngMax = userLng + 1;
+
+            // Собираем URL без ключа в параметре (всё через заголовок)
+            const url = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
+
+            // Создаём заголовок для Basic Auth, если есть clientId и secret
+            const headers = {};
+            if (OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET) {
+                const credentials = `${OPENSKY_CLIENT_ID}:${OPENSKY_CLIENT_SECRET}`;
+                const encoded = btoa(credentials); // кодируем в base64
+                headers['Authorization'] = `Basic ${encoded}`;
+            }
+
+            try {
+                const res = await fetch(url, { headers });
+                const data = await res.json();
+                if (!data.states || data.states.length === 0) {
+                    container.innerHTML = 'Самолётов поблизости нет.';
+                    return;
+                }
+
+                const nearby = [];
+                for (const state of data.states) {
+                    const [icao24, callsign, origin_country, time_position, last_contact, lon, lat, baro_altitude, on_ground, velocity, true_track, vertical_rate] = state;
+                    if (lat === null || lon === null || baro_altitude === null) continue;
+                    const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
+                    if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
+                        nearby.push({
+                            icao24,
+                            callsign: callsign ? callsign.trim() : 'N/A',
+                            lat,
+                            lon,
+                            altitude: baro_altitude.toFixed(0),
+                            distance: distKm.toFixed(1),
+                            track: true_track,
+                            velocity,
+                            vertical_rate
+                        });
+                    }
+                }
+
+                nearby.sort((a, b) => a.distance - b.distance);
+
+                if (nearby.length === 0) {
+                    container.innerHTML = 'Все самолёты далеко или высоко.';
+                } else {
+                    container.innerHTML = nearby.map(a => `
+                        <div class="aircraft">
+                            <div>
+                                <span class="callsign">${a.callsign}</span><br>
+                                <small>${a.altitude} м • ${a.velocity ? a.velocity.toFixed(0) + ' м/с' : ''} • ${a.track ? a.track.toFixed(0) + '°' : ''}</small>
+                            </div>
+                            <div class="distance">${a.distance} км</div>
+                        </div>
+                    `).join('');
+                }
+
+                checkAndNotify(nearby);
+            } catch (e) {
+                container.innerHTML = 'Ошибка загрузки данных OpenSky.';
+                console.error(e);
+            }
+        }
+
+        function checkAndNotify(aircraftList) {
+            if (Notification.permission !== 'granted') return;
+            for (const ac of aircraftList) {
+                if (notifiedAircraft.has(ac.icao24)) continue;
+                notifiedAircraft.add(ac.icao24);
+                if (navigator.serviceWorker) {
+                    navigator.serviceWorker.ready.then(sw => {
+                        sw.showNotification(`🛩 ${ac.callsign} рядом!`, {
+                            body: `Высота ${ac.altitude} м, расстояние ${ac.distance} км`,
+                            icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="80" font-size="80">🛩</text></svg>',
+                            vibrate: [200, 100, 200]
+                        });
+                    });
+                }
+            }
+        }
+
+        function requestNotificationPermission() {
+            Notification.requestPermission().then(perm => {
+                if (perm === 'granted') alert('Уведомления включены! Буду сообщать о бортах.');
+                else alert('Нужно разрешить уведомления в настройках браузера.');
+            });
+        }
+
+        function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const dLat = deg2rad(lat2 - lat1);
+            const dLon = deg2rad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        function deg2rad(deg) {
+            return deg * (Math.PI / 180);
+        }
+
+        getUserLocation();
+        setInterval(fetchAircraft, 120000);
+    </script>
+</body>
+</html>
