@@ -31,7 +31,6 @@
     <button onclick="requestNotificationPermission()">🔔 Включить уведомления</button>
 
     <script>
-        // Твои ключи от OpenSky
         const OPENSKY_CLIENT_ID = 'leksus27-api-client';
         const OPENSKY_CLIENT_SECRET = 'LJWxOAmwDSCuP2QKVFOHg7UyfLjUsWl0';
         const VISIBLE_RADIUS_KM = 15;
@@ -41,7 +40,6 @@
         let userLng = null;
         let notifiedAircraft = new Set();
 
-        // Service Worker
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('sw.js')
@@ -80,14 +78,14 @@
             const lngMin = userLng - 1;
             const lngMax = userLng + 1;
 
-            // Собираем URL без ключа в параметре (всё через заголовок)
-            const url = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
+            const openskyUrl = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
+            // ✅ Используем CORS-прокси, чтобы обойти блокировку браузера
+            const url = `https://corsproxy.io/?` + encodeURIComponent(openskyUrl);
 
-            // Создаём заголовок для Basic Auth, если есть clientId и secret
             const headers = {};
             if (OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET) {
                 const credentials = `${OPENSKY_CLIENT_ID}:${OPENSKY_CLIENT_SECRET}`;
-                const encoded = btoa(credentials); // кодируем в base64
+                const encoded = btoa(credentials);
                 headers['Authorization'] = `Basic ${encoded}`;
             }
 
