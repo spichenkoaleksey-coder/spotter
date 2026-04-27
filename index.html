@@ -28,8 +28,11 @@
     </div>
     <button onclick="requestNotificationPermission()">🔔 Включить уведомления</button>
     <script>
+        // Твой личный прокси (Vercel) — работает в России
+        const PROXY_URL = 'https://spotter-proxy.vercel.app/api';
         const VISIBLE_RADIUS_KM = 15;
         const MAX_ALTITUDE_M = 6000;
+
         let userLat = null, userLng = null;
         let notifiedAircraft = new Set();
 
@@ -59,71 +62,41 @@
             const container = document.getElementById('aircraft-container');
             container.innerHTML = 'Поиск самолётов...';
 
-            const latMin = userLat - 1, latMax = userLat + 1;
-            const lngMin = userLng - 1, lngMax = userLng + 1;
-            const openskyUrl = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
+            const params = `lamin=${userLat - 1}&lomin=${userLng - 1}&lamax=${userLat + 1}&lomax=${userLng + 1}`;
+            const url = `${PROXY_URL}?${params}`;
 
-            let data = null;
-
-            // Попытка 1: прямой запрос с Origin (часто срабатывает без VPN)
             try {
-                const res = await fetch(openskyUrl, {
-                    headers: { 'Origin': window.location.origin }
-                });
-                if (res.ok) {
-                    data = await res.json();
+                const res = await fetch(url);
+                const data = await res.json();
+                if (!data.states || data.states.length === 0) {
+                    container.innerHTML = 'Самолётов поблизости нет.';
+                    return;
                 }
-            } catch (e) {}
 
-            // Попытка 2: резервный прокси (правильный синтаксис)
-            if (!data || !data.states) {
-                try {
-                    const proxyUrl = 'https://cors.eu.org/' + openskyUrl;
-                    const res = await fetch(proxyUrl);
-                    if (res.ok) data = await res.json();
-                } catch (e) {}
-            }
-
-            // Попытка 3: запасной прокси
-            if (!data || !data.states) {
-                try {
-                    const proxyUrl2 = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(openskyUrl);
-                    const res = await fetch(proxyUrl2);
-                    if (res.ok) data = await res.json();
-                } catch (e) {}
-            }
-
-            if (!data || !data.states) {
-                container.innerHTML = '❌ Не удалось загрузить данные. Попробуй позже.';
-                return;
-            }
-
-            if (data.states.length === 0) {
-                container.innerHTML = 'Самолётов поблизости нет.';
-                return;
-            }
-
-            const nearby = [];
-            for (const state of data.states) {
-                const [icao24, callsign, , , , lon, lat, baro_altitude] = state;
-                if (lat == null || lon == null || baro_altitude == null) continue;
-                const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
-                if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
-                    nearby.push({
-                        icao: icao24,
-                        callsign: callsign ? callsign.trim() : 'N/A',
-                        altitude: baro_altitude.toFixed(0),
-                        distance: distKm.toFixed(1)
-                    });
+                const nearby = [];
+                for (const state of data.states) {
+                    const [icao24, callsign, , , , lon, lat, baro_altitude] = state;
+                    if (lat == null || lon == null || baro_altitude == null) continue;
+                    const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
+                    if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
+                        nearby.push({
+                            icao: icao24,
+                            callsign: callsign ? callsign.trim() : 'N/A',
+                            altitude: baro_altitude.toFixed(0),
+                            distance: distKm.toFixed(1)
+                        });
+                    }
                 }
+
+                nearby.sort((a, b) => a.distance - b.distance);
+                container.innerHTML = nearby.length === 0
+                    ? 'Все самолёты далеко или высоко.'
+                    : nearby.map(a => `<div class="aircraft"><div><span class="callsign">${a.callsign}</span><br><small>${a.altitude} м</small></div><div class="distance">${a.distance} км</div></div>`).join('');
+
+                checkAndNotify(nearby);
+            } catch (e) {
+                container.innerHTML = '❌ Ошибка загрузки данных.';
             }
-
-            nearby.sort((a, b) => a.distance - b.distance);
-            container.innerHTML = nearby.length === 0
-                ? 'Все самолёты далеко или высоко.'
-                : nearby.map(a => `<div class="aircraft"><div><span class="callsign">${a.callsign}</span><br><small>${a.altitude} м</small></div><div class="distance">${a.distance} км</div></div>`).join('');
-
-            checkAndNotify(nearby);
         }
 
         function checkAndNotify(aircraftList) {
