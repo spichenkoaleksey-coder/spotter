@@ -24,27 +24,20 @@
     <div class="card">
         <h2>🛩 Самолёты рядом</h2>
         <div id="aircraft-container">Загрузка...</div>
-        <p class="note" id="zone-info">Зона видимости: 15 км, высота < 6000 м<br>Обновление каждые 5 мин</p>
+        <p class="note">Зона видимости: 15 км, высота < 6000 м • Обновление каждые 5 мин</p>
     </div>
     <button onclick="requestNotificationPermission()">🔔 Включить уведомления</button>
     <script>
+        // Твой личный прокси (работает)
+        const PROXY_URL = 'https://spotter-proxy-bro.workers.dev/api';
         const VISIBLE_RADIUS_KM = 15;
         const MAX_ALTITUDE_M = 6000;
+
         let userLat = null, userLng = null;
         let notifiedAircraft = new Set();
 
-        // ТОЛЬКО РАБОЧИЕ ПРОКСИ (проверены в РФ)
-        const PROXY_LIST = [
-            'https://cors.bridged.cc/',                // лучший
-            'https://cors.eu.org/'                     // запасной
-        ];
-
         if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js')
-                    .then(reg => console.log('SW ok'))
-                    .catch(err => console.log('SW err'));
-            });
+            navigator.serviceWorker.register('sw.js');
         }
 
         function getUserLocation() {
@@ -69,57 +62,41 @@
             const container = document.getElementById('aircraft-container');
             container.innerHTML = 'Поиск самолётов...';
 
-            const latMin = userLat - 1, latMax = userLat + 1;
-            const lngMin = userLng - 1, lngMax = userLng + 1;
-            const openskyUrl = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
+            const params = `lamin=${userLat - 1}&lomin=${userLng - 1}&lamax=${userLat + 1}&lomax=${userLng + 1}`;
+            const url = `${PROXY_URL}?${params}`;
 
-            let data = null;
-            // Прямой запрос не делаем — бесполезно. Сразу лупим через прокси.
-            for (const proxy of PROXY_LIST) {
-                try {
-                    const url = proxy + openskyUrl;
-                    const res = await fetch(url);
-                    data = await res.json();
-                    if (data && data.states) break;
-                } catch (e) {
-                    console.warn('Прокси не сработал:', proxy);
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                if (!data.states || data.states.length === 0) {
+                    container.innerHTML = 'Самолётов поблизости нет.';
+                    return;
                 }
-            }
 
-            if (!data || !data.states) {
-                container.innerHTML = '❌ Все прокси недоступны. Попробуй позже.';
-                return;
-            }
-            if (data.states.length === 0) {
-                container.innerHTML = 'Самолётов поблизости нет.';
-                return;
-            }
-
-            const nearby = [];
-            for (const state of data.states) {
-                const [icao24, callsign, , , , lon, lat, baro_altitude] = state;
-                if (lat == null || lon == null || baro_altitude == null) continue;
-                const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
-                if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
-                    nearby.push({
-                        icao: icao24,
-                        callsign: callsign ? callsign.trim() : 'N/A',
-                        altitude: baro_altitude.toFixed(0),
-                        distance: distKm.toFixed(1)
-                    });
+                const nearby = [];
+                for (const state of data.states) {
+                    const [icao24, callsign, , , , lon, lat, baro_altitude] = state;
+                    if (lat == null || lon == null || baro_altitude == null) continue;
+                    const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
+                    if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
+                        nearby.push({
+                            icao: icao24,
+                            callsign: callsign ? callsign.trim() : 'N/A',
+                            altitude: baro_altitude.toFixed(0),
+                            distance: distKm.toFixed(1)
+                        });
+                    }
                 }
+
+                nearby.sort((a, b) => a.distance - b.distance);
+                container.innerHTML = nearby.length === 0
+                    ? 'Все самолёты далеко или высоко.'
+                    : nearby.map(a => `<div class="aircraft"><div><span class="callsign">${a.callsign}</span><br><small>${a.altitude} м</small></div><div class="distance">${a.distance} км</div></div>`).join('');
+
+                checkAndNotify(nearby);
+            } catch (e) {
+                container.innerHTML = '❌ Ошибка загрузки данных.';
             }
-
-            nearby.sort((a, b) => a.distance - b.distance);
-            container.innerHTML = nearby.length === 0
-                ? 'Все самолёты далеко или высоко.'
-                : nearby.map(a => `
-                    <div class="aircraft">
-                        <div><span class="callsign">${a.callsign}</span><br><small>${a.altitude} м</small></div>
-                        <div class="distance">${a.distance} км</div>
-                    </div>`).join('');
-
-            checkAndNotify(nearby);
         }
 
         function checkAndNotify(aircraftList) {
@@ -127,15 +104,13 @@
             for (const ac of aircraftList) {
                 if (notifiedAircraft.has(ac.icao)) continue;
                 notifiedAircraft.add(ac.icao);
-                if (navigator.serviceWorker) {
-                    navigator.serviceWorker.ready.then(sw => {
-                        sw.showNotification(`🛩 ${ac.callsign} рядом!`, {
-                            body: `Высота ${ac.altitude} м, расстояние ${ac.distance} км`,
-                            icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="80" font-size="80">🛩</text></svg>',
-                            vibrate: [200, 100, 200]
-                        });
+                navigator.serviceWorker.ready.then(sw => {
+                    sw.showNotification(`🛩 ${ac.callsign} рядом!`, {
+                        body: `Высота ${ac.altitude} м, расстояние ${ac.distance} км`,
+                        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="80" font-size="80">🛩</text></svg>',
+                        vibrate: [200, 100, 200]
                     });
-                }
+                });
             }
         }
 
