@@ -31,14 +31,10 @@
     <button onclick="requestNotificationPermission()">🔔 Включить уведомления</button>
 
     <script>
-        // Твои ключи OpenSky
-        const OPENSKY_CLIENT_ID = 'leksus27-api-client';
-        const OPENSKY_CLIENT_SECRET = 'LJWxOAmwDSCuP2QKVFOHg7UyfLjUsWl0';
+        // Твой личный прокси (Deno Deploy) — уже с ключами OpenSky внутри
+        const PROXY_URL = 'https://spotter-proxy-leksus.deno.dev/api';
         const VISIBLE_RADIUS_KM = 15;
         const MAX_ALTITUDE_M = 6000;
-
-        // Прокси, который работает в России и передаёт заголовки
-        const PROXY_URL = 'https://api.allorigins.win/raw?url=';
 
         let userLat = null;
         let userLng = null;
@@ -47,8 +43,8 @@
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('sw.js')
-                    .then(reg => console.log('SW зарегистрирован'))
-                    .catch(err => console.log('SW ошибка:', err));
+                    .then(reg => console.log('SW ok'))
+                    .catch(err => console.log('SW err'));
             });
         }
 
@@ -68,7 +64,7 @@
                 err => {
                     document.getElementById('user-coords').textContent = 'Ошибка GPS: ' + err.message;
                 },
-                { enableHighAccuracy: true, maximumAge: 60000 }
+                { enableHighAccuracy: true }
             );
         }
 
@@ -82,19 +78,13 @@
             const lngMin = userLng - 1;
             const lngMax = userLng + 1;
 
-            const openskyUrl = `https://opensky-network.org/api/states/all?lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
-            const url = PROXY_URL + encodeURIComponent(openskyUrl);
-
-            // Заголовок авторизации
-            const headers = {};
-            if (OPENSKY_CLIENT_ID && OPENSKY_CLIENT_SECRET) {
-                const credentials = `${OPENSKY_CLIENT_ID}:${OPENSKY_CLIENT_SECRET}`;
-                headers['Authorization'] = 'Basic ' + btoa(credentials);
-            }
+            const params = `lamin=${latMin}&lomin=${lngMin}&lamax=${latMax}&lomax=${lngMax}`;
+            const url = `${PROXY_URL}?${params}`;
 
             try {
-                const res = await fetch(url, { headers });
+                const res = await fetch(url);
                 const data = await res.json();
+                if (data.error) throw new Error(data.error);
                 if (!data.states || data.states.length === 0) {
                     container.innerHTML = 'Самолётов поблизости нет.';
                     return;
@@ -107,15 +97,12 @@
                     const distKm = getDistanceFromLatLonInKm(userLat, userLng, lat, lon);
                     if (distKm <= VISIBLE_RADIUS_KM && baro_altitude <= MAX_ALTITUDE_M) {
                         nearby.push({
-                            icao24,
+                            icao: icao24,
                             callsign: callsign ? callsign.trim() : 'N/A',
-                            lat,
-                            lon,
                             altitude: baro_altitude.toFixed(0),
                             distance: distKm.toFixed(1),
-                            track: true_track,
-                            velocity,
-                            vertical_rate
+                            velocity: velocity ? velocity.toFixed(0) + ' м/с' : '',
+                            track: true_track ? true_track.toFixed(0) + '°' : ''
                         });
                     }
                 }
@@ -129,7 +116,7 @@
                         <div class="aircraft">
                             <div>
                                 <span class="callsign">${a.callsign}</span><br>
-                                <small>${a.altitude} м • ${a.velocity ? a.velocity.toFixed(0) + ' м/с' : ''} • ${a.track ? a.track.toFixed(0) + '°' : ''}</small>
+                                <small>${a.altitude} м • ${a.velocity} • ${a.track}</small>
                             </div>
                             <div class="distance">${a.distance} км</div>
                         </div>
@@ -138,7 +125,7 @@
 
                 checkAndNotify(nearby);
             } catch (e) {
-                container.innerHTML = 'Ошибка загрузки данных OpenSky.';
+                container.innerHTML = 'Ошибка загрузки данных.';
                 console.error(e);
             }
         }
@@ -146,8 +133,8 @@
         function checkAndNotify(aircraftList) {
             if (Notification.permission !== 'granted') return;
             for (const ac of aircraftList) {
-                if (notifiedAircraft.has(ac.icao24)) continue;
-                notifiedAircraft.add(ac.icao24);
+                if (notifiedAircraft.has(ac.icao)) continue;
+                notifiedAircraft.add(ac.icao);
                 if (navigator.serviceWorker) {
                     navigator.serviceWorker.ready.then(sw => {
                         sw.showNotification(`🛩 ${ac.callsign} рядом!`, {
@@ -171,16 +158,11 @@
             const R = 6371;
             const dLat = deg2rad(lat2 - lat1);
             const dLon = deg2rad(lon2 - lon1);
-            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const a = Math.sin(dLat/2)**2 + Math.cos(deg2rad(lat1))*Math.cos(deg2rad(lat2))*Math.sin(dLon/2)**2;
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
             return R * c;
         }
-
-        function deg2rad(deg) {
-            return deg * (Math.PI / 180);
-        }
+        function deg2rad(deg) { return deg * (Math.PI/180); }
 
         getUserLocation();
         setInterval(fetchAircraft, 120000);
